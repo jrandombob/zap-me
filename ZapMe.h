@@ -52,6 +52,22 @@
   do {                       \
     Serial.print(msg);       \
   } while(false);
+#define DEBUG_ZAPME_MSG_HEX(msg) \
+  do {                       \
+    Serial.print(msg, HEX);       \
+  } while(false);
+#define DEBUG_ZAPME_MSGLN_HEX(msg) \
+  do {                       \
+    Serial.println(msg, HEX);       \
+  } while(false);
+#define DEBUG_ZAPME_MSG_BIN(msg) \
+  do {                       \
+    Serial.print(msg, BIN);       \
+  } while(false);
+#define DEBUG_ZAPME_MSGLN_BIN(msg) \
+  do {                       \
+    Serial.println(msg, BIN);       \
+  } while(false);
 #else
 #define DEBUG_ZAPME_MSGLN(msg) do {} while(false);
 #define DEBUG_ZAPME_MSG(msg) do {} while(false);
@@ -74,6 +90,69 @@ class ZapMe {
     bool mDebug;
 };
 
+
+class CH8803v2 : public ZapMe {
+  /*
+   * Chinese shockcollar 880-3 v2 uses 5 bytes of data per command:
+   *
+   * Channel (4-bit) | Function (4-bit) | ID (16-bit) | Strength (8 bit) | Reversed/Inverted Function (4-bit) | Reversed/Inverted Channel (4-bit)
+   *
+   * Channel:
+   *   - CH1 - 1000 (8)
+   *   - CH2 - 1111 (F)
+   *   - CH3 - 1010 (A)
+   * 
+   * Function:
+   *   - Shock     - 0001 (1)
+   *   - Vibration - 0010 (2)
+   *   - Sound     - 0100 (4)
+   *
+   * The ID is simply an identifier randomly assigned to each remote. Collars
+   * can be set to learning mode to be associated with a new ID.
+   *
+   * The strength is an integer in range 0 to 99. It is always 0 for sound.
+   *
+   * The preamble is a 1440us HIGH followed by an 800us LOW
+   * One bits are 720us HIGH followed by 320us LOW
+   * Zero bits are 320us HIGH followed by 720us LOW
+   * End of Message is an 800us HIGH pulse
+   *
+   */
+
+
+  public:
+    CH8803v2(uint8_t transmitPin, uint16_t id)
+      : ZapMe(transmitPin), mId(id), mChannel(0) {
+        /*
+         * In transmit timings, we need 2 timings for the sync preamble,
+         * then 80 timings to send 40 bits of data, then 1 end pulse
+         * and one for the terminating null byte we are going to use as
+         * a length indicator.
+         */
+        mMaxTransmitTimings = 3 + 2*40 + 1 + 1;
+        mTransmitTimings = new uint16_t[mMaxTransmitTimings];
+      }
+
+    void setId(uint16_t id) { mId = id; }
+    void setId(uint8_t hid, uint8_t lid) { mId = (hid << 8) + lid; }
+
+    void setChannel(uint8_t ch) { mChannel = ch; }
+
+    virtual void sendShock(uint8_t strength, uint16_t duration);
+    virtual void sendVibration(uint8_t strength, uint16_t duration);
+    virtual void sendAudio(uint8_t strength, uint16_t duration);
+
+  protected:
+
+    void sendCommand(uint8_t func, uint8_t strength, uint16_t duration);
+	uint8_t mapChannel(uint8_t channel);
+	uint8_t reverse(uint8_t b);
+	
+    uint16_t mId;
+    uint8_t mChannel;
+    uint16_t* mTransmitTimings;
+    uint16_t mMaxTransmitTimings;
+};
 
 class CH8803 : public ZapMe {
   /*

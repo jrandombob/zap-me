@@ -28,6 +28,8 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+//#define DEBUG_ZAPME
+
 #include "ZapMe.h"
 
 void ZapMe::sendTiming(uint16_t* timings) {
@@ -142,6 +144,146 @@ void CH8803::sendCommand(uint8_t func, uint8_t strength, uint16_t duration) {
   } while(millis() - startTime < duration);
 
   DEBUG_ZAPME_MSGLN(" complete.");
+}
+
+void CH8803v2::sendShock(uint8_t strength, uint16_t duration) {
+  DEBUG_ZAPME_MSGLN("CH8803v2::sendShock");
+  sendCommand(1, strength, duration);
+}
+
+void CH8803v2::sendVibration(uint8_t strength, uint16_t duration) {
+  DEBUG_ZAPME_MSGLN("CH8803v2::sendVibration");
+  sendCommand(2, strength, duration);
+}
+
+void CH8803v2::sendAudio(uint8_t strength /* unused */, uint16_t duration) {
+  DEBUG_ZAPME_MSGLN("CH8803v2::sendAudio");
+  sendCommand(4, 0, duration);
+}
+
+void CH8803v2::sendCommand(uint8_t func, uint8_t strength, uint16_t duration) {
+  // pulseLength = 980us  :  900us < x < 990us
+  // zeroLength  = 290us  :  270us < x < 290us
+  // oneLength   = 800us  :  780us < x < 850us
+  // preamble0   = 840us  :  780us < x < 1190us
+  // preamble1   = 1440us : 1100us < x < 1630us
+  
+  const uint16_t pulseLength = 980; 
+  const uint16_t zeroLength  = 290;
+  const uint16_t oneLength   = 800;
+  
+  uint16_t transmitIdx = 0;
+
+  uint8_t channel = mapChannel(mChannel);
+  #ifdef DEBUG_ZAPME
+  DEBUG_ZAPME_MSG("Channel: ");
+  DEBUG_ZAPME_MSG(mChannel);
+  DEBUG_ZAPME_MSG(" mapped: ");
+  DEBUG_ZAPME_MSGLN(channel);
+  #endif
+
+  // Not actually a checksum
+  uint8_t checksum = reverse((func ^ 0x0F) + ((channel ^ 0x0F) << 4));
+  #ifdef DEBUG_ZAPME
+  DEBUG_ZAPME_MSG("Calculated Checksum: ");
+  DEBUG_ZAPME_MSGLN_HEX(checksum);
+  #endif
+
+    /* This is the sync preamble */
+  mTransmitTimings[transmitIdx++] = 840;
+  mTransmitTimings[transmitIdx++] = 1440;
+  mTransmitTimings[transmitIdx++] = pulseLength - zeroLength;
+  
+  /*
+   * We can now translate bits into timings as follows:
+   *
+   * Each bit is a pulse of fixed-width (`pulseLength` microseconds), where
+   * a zero has a raise of `zeroLength` microseconds at the beginning and
+   * a one has a raise of `oneLength` microseconds at the beginning.
+   */
+
+   /* Translate l bits to timings */
+   #define TRBITS(b,l) \
+     for (uint8_t k = l - 1; k <= l - 1; --k) {                   \
+       uint16_t bitLength = zeroLength;                           \
+       if (((b) & ( 1 << k )) >> k)                               \
+         bitLength = oneLength;                                   \
+       mTransmitTimings[transmitIdx++] = bitLength;               \
+       mTransmitTimings[transmitIdx++] = pulseLength - bitLength; \
+     };
+
+  TRBITS(channel, 4);
+  TRBITS(func, 4);
+  TRBITS(mId, 16);
+  TRBITS(strength, 8);
+  TRBITS(checksum, 8);
+  
+  #ifdef DEBUG_ZAPME
+  DEBUG_ZAPME_MSG("Packet Bytes: ");
+  DEBUG_ZAPME_MSG_BIN(func + (channel << 4));
+  DEBUG_ZAPME_MSG(" ");
+  DEBUG_ZAPME_MSG_BIN((mId & 0x00FF));
+  DEBUG_ZAPME_MSG(" ");
+  DEBUG_ZAPME_MSG_BIN((mId >> 8));
+  DEBUG_ZAPME_MSG(" ");
+  DEBUG_ZAPME_MSG_BIN(strength);
+  DEBUG_ZAPME_MSG(" ");
+  DEBUG_ZAPME_MSGLN_BIN(checksum);
+  #endif
+  
+  // Trail, which is 3 zeros, but the third zero has a longer pulse
+  mTransmitTimings[transmitIdx++] = 800;
+
+  if (mMaxTransmitTimings <= transmitIdx) {
+    // This should never happen
+    DEBUG_ZAPME_MSG("ERROR: Exceeding maximum allocated transmit timings: ");
+    DEBUG_ZAPME_MSG(transmitIdx);
+    DEBUG_ZAPME_MSGLN(mMaxTransmitTimings);
+    return;
+  }
+
+  /* Null terminate */
+  mTransmitTimings[transmitIdx++] = 0;
+
+  uint32_t startTime = millis();
+
+  #ifdef DEBUG_ZAPME
+  DEBUG_ZAPME_MSG("The following timings will be transmitted: ");
+  for (uint32_t tidx = 0; mTransmitTimings[tidx]; ++tidx) {
+    DEBUG_ZAPME_MSG(mTransmitTimings[tidx]);
+    DEBUG_ZAPME_MSG(",");
+  }
+  DEBUG_ZAPME_MSGLN("0");
+  #endif
+
+  DEBUG_ZAPME_MSG("Starting transmission...");
+
+  do {
+    /* Transmit timings */
+    sendTiming(mTransmitTimings);
+    DEBUG_ZAPME_MSG(".");
+  } while(millis() - startTime < duration);
+
+  DEBUG_ZAPME_MSGLN(" complete.");
+}
+
+uint8_t CH8803v2::reverse(uint8_t b) {
+   b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+   b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+   b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+   return b;
+}
+
+uint8_t CH8803v2::mapChannel(uint8_t ch)
+{
+	switch(ch) {
+		case 1:
+			return 0x0F;
+		case 2:
+			return 0x0A;
+		default:
+			return 0x08;
+	}
 }
 
 void DogTronic::sendShock(uint8_t strength, uint16_t duration) {
